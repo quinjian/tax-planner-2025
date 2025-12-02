@@ -3,30 +3,31 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 
-# --- PAGE CONFIGURATION ---
-###st.set_page_config(page_title="Universal US Tax & Strategy Planner 2025", layout="wide", initial_sidebar_state="expanded")
-# --- SEO CONFIGURATION ---
+# --- SEO & PAGE CONFIG ---
 st.set_page_config(
-    page_title="US Tax Planner & Capital Gains Calculator | Free Tool",
-    page_icon="💸",
+    page_title="2025 US Tax Planner & TLH Calculator",
+    page_icon="📉",
     layout="wide",
     initial_sidebar_state="expanded",
     menu_items={
-        'Get Help': 'https://www.capicomm.com/help',
-        'Report a bug': "https://www.capicomm.com/bug",
-        'About': "# US Tax Strategist\nThis tool helps calculate **Capital Gains**, **Roth Conversions**, and **State Taxes**."
+        'About': "# 2025 US Tax Strategist\nCalculates Federal, State, and Capital Gains taxes."
     }
 )
-# --- CUSTOM CSS ---
+
+# --- INJECT SEO HEADER (Hidden) ---
 st.markdown("""
+    <h1 style='position: absolute; top: -1000px; left: -1000px;'>
+        Free 2025 US Income Tax Planner, Tax Loss Harvesting Calculator, Capital Gains Offset Tool, 
+        and State Tax Calculator for California, New York, Texas, and Florida.
+    </h1>
     <style>
-    .main { background-color: #f8f9fa; }
+    .main { background-color: #f4f6f9; }
     .stMetric { background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2025 TAX CONSTANTS ---
-TAX_BRACKETS = {
+# --- CONSTANTS: FEDERAL (2025) ---
+FED_BRACKETS = {
     'Single': [(11925, 0.10), (48475, 0.12), (103350, 0.22), (197300, 0.24), (250525, 0.32), (626350, 0.35), (float('inf'), 0.37)],
     'Married Joint': [(23850, 0.10), (96950, 0.12), (206700, 0.22), (394600, 0.24), (501050, 0.32), (751600, 0.35), (float('inf'), 0.37)]
 }
@@ -35,14 +36,11 @@ LTCG_BRACKETS = {
     'Married Joint': [(96700, 0.0), (600050, 0.15), (float('inf'), 0.20)]
 }
 STD_DEDUCTION = {'Single': 15000, 'Married Joint': 30000}
-SENIOR_BOOST = {'Single': 1950, 'Married Joint': 1550} # Addl deduction if 65+
-HSA_LIMIT = {'Single': 4300, 'Family': 8550}
+SENIOR_BOOST = {'Single': 1950, 'Married Joint': 1550} 
 NIIT_THRESH = {'Single': 200000, 'Married Joint': 250000}
-MED_THRESH = {'Single': 200000, 'Married Joint': 250000}
-EV_CAP = {'Single': 150000, 'Married Joint': 300000}
-SALT_CAP = 10000
+SALT_CAP = 10000  
 
-# --- CONSTANTS: STATE ---
+# --- CONSTANTS: STATE (Simplified 2025 Models) ---
 STATE_DATA = {
     "Texas (0%)": {"type": "none"},
     "Florida (0%)": {"type": "none"},
@@ -60,7 +58,8 @@ STATE_DATA = {
     "Custom / Other": {"type": "flat_input"}
 }
 
-# --- LOGIC ENGINE ---
+# --- LOGIC ENGINES ---
+
 def calculate_state_tax(taxable_income_federal, status, state_selection, custom_rate=0):
     if state_selection not in STATE_DATA: return 0
     state_info = STATE_DATA[state_selection]
@@ -81,343 +80,253 @@ def calculate_state_tax(taxable_income_federal, status, state_selection, custom_
     return 0
 
 def net_schedule_d(st_stock, lt_stock, futures_1256):
-    """Trader Logic: Splits Futures 60/40 and nets against stock P/L"""
+    """
+    Trader Logic + TLH Logic:
+    1. Split Futures 60/40.
+    2. Add ST Stock + ST Futures.
+    3. Add LT Stock + LT Futures.
+    4. Perform Netting (Losses offset Gains).
+    """
     f_lt = futures_1256 * 0.60
     f_st = futures_1256 * 0.40
     
     tot_st = st_stock + f_st
     tot_lt = lt_stock + f_lt
     
-    final_st, final_lt, deduct = 0, 0, 0
+    final_st, final_lt, deduct, carryover = 0, 0, 0, 0
     
+    # CASE 1: Both Positive
     if tot_st >= 0 and tot_lt >= 0:
         final_st, final_lt = tot_st, tot_lt
-    elif tot_st < 0 and tot_lt < 0:
-        deduct = min(3000, abs(tot_st + tot_lt))
-    elif tot_st < 0 < tot_lt:
-        net = tot_lt + tot_st
-        if net >= 0: final_lt = net
-        else: deduct = min(3000, abs(net))
-    elif tot_lt < 0 < tot_st:
-        net = tot_st + tot_lt
-        if net >= 0: final_st = net
-        else: deduct = min(3000, abs(net))
         
-    return final_st, final_lt, deduct, (f_st, f_lt)
-
-def calculate_tax_liability(w2_income, ltcg_income, status, deductions, credits):
-    """
-    Comprehensive engine handling Ordinary, LTCG, NIIT, and Medicare taxes.
-    """
-    # 1. Determine Taxable Ordinary Income
-    effective_deduction = max(STD_DEDUCTION[status], deductions)
-    taxable_ordinary = max(0, w2_income - effective_deduction)
-    
-    # 2. Ordinary Income Tax
-    ord_tax = 0
-    prev_lim = 0
-    for limit, rate in TAX_BRACKETS[status]:
-        if taxable_ordinary > prev_lim:
-            amt = min(taxable_ordinary, limit) - prev_lim
-            ord_tax += amt * rate
-            prev_lim = limit
-        else:
-            break
+    # CASE 2: Both Negative
+    elif tot_st < 0 and tot_lt < 0:
+        total_loss = abs(tot_st + tot_lt)
+        deduct = min(3000, total_loss)
+        carryover = total_loss - deduct
+        
+    # CASE 3: Mixed (Netting required)
+    elif tot_st < 0 < tot_lt: # ST Loss, LT Gain
+        net = tot_lt + tot_st
+        if net >= 0: 
+            final_lt = net
+        else: 
+            deduct = min(3000, abs(net))
+            carryover = abs(net) - deduct
             
-    # 3. LTCG Tax (Stacked Method)
-    current_stack = taxable_ordinary
-    remaining_ltcg = ltcg_income
-    ltcg_tax = 0
-    
-    for limit, rate in LTCG_BRACKETS[status]:
-        if current_stack < limit:
-            space = limit - current_stack
-            taxable_amt = min(remaining_ltcg, space)
-            ltcg_tax += taxable_amt * rate
-            current_stack += taxable_amt
-            remaining_ltcg -= taxable_amt
-            
-    # 4. Surtaxes
-    magi = w2_income + ltcg_income
-    excess_magi_niit = max(0, magi - NIIT_THRESH[status])
-    niit_tax = min(ltcg_income, excess_magi_niit) * 0.038
-    med_tax = max(0, w2_income - MED_THRESH[status]) * 0.009
-    
-    total_tax_before_credits = ord_tax + ltcg_tax + niit_tax + med_tax
-    final_tax = max(0, total_tax_before_credits - credits)
-    
-    # Marginal Rate Calculation
-    marginal_rate = 0
-    for limit, rate in TAX_BRACKETS[status]:
-        if taxable_ordinary < limit:
-            marginal_rate = rate
-            break
-        elif limit == float('inf'):
-            marginal_rate = rate
+    elif tot_lt < 0 < tot_st: # LT Loss, ST Gain
+        net = tot_st + tot_lt
+        if net >= 0: 
+            final_st = net
+        else: 
+            deduct = min(3000, abs(net))
+            carryover = abs(net) - deduct
+        
+    return final_st, final_lt, deduct, carryover
 
+def calculate_full_liability(w2, st_gains, lt_gains, futures, tlh_amount, status, state_name, custom_state_rate, deductions_manual, age):
+    
+    # 1. APPLY TLH STRATEGY
+    # We treat Harvested Losses as a negative Short-Term number. 
+    # This is standard planning (ST losses are more valuable, so we assume best case or general pool).
+    adjusted_st_gains = st_gains - tlh_amount
+    
+    # 2. Netting Schedule D
+    net_st, net_lt, cap_loss_deduct, carryover = net_schedule_d(adjusted_st_gains, lt_gains, futures)
+    
+    total_ord_income = w2 + net_st
+    
+    # 3. Deductions (Age Aware)
+    base_std_ded = STD_DEDUCTION[status]
+    if age >= 65:
+        base_std_ded += SENIOR_BOOST[status]
+
+    # Calculate State Tax to check SALT Cap
+    est_fed_agi = total_ord_income + net_lt - cap_loss_deduct
+    est_state_tax = calculate_state_tax(est_fed_agi, status, state_name, custom_state_rate)
+    
+    salt_deduction = min(SALT_CAP, est_state_tax)
+    total_itemized = deductions_manual + salt_deduction
+    
+    final_deduction = max(base_std_ded, total_itemized)
+    
+    # 4. Federal Taxable Income
+    fed_taxable_ord = max(0, total_ord_income - cap_loss_deduct - final_deduction)
+    
+    # 5. Federal Calculation
+    fed_ord_tax = 0
+    prev = 0
+    for lim, rate in FED_BRACKETS[status]:
+        if fed_taxable_ord > prev:
+            amt = min(fed_taxable_ord, lim) - prev
+            fed_ord_tax += amt * rate
+            prev = lim
+        else: break
+            
+    fed_ltcg_tax = 0
+    curr_stack = fed_taxable_ord
+    rem_lt = net_lt
+    for lim, rate in LTCG_BRACKETS[status]:
+        if curr_stack < lim:
+            space = lim - curr_stack
+            amt = min(rem_lt, space)
+            fed_ltcg_tax += amt * rate
+            curr_stack += amt
+            rem_lt -= amt
+            
+    magi = w2 + net_st + net_lt + futures - cap_loss_deduct # Simplified MAGI
+    niit = min(net_st + net_lt, max(0, magi - NIIT_THRESH[status])) * 0.038
+    med = max(0, w2 - 200000) * 0.009
+    
+    fed_total = fed_ord_tax + fed_ltcg_tax + niit + med
+    
+    # 6. State Calculation
+    state_taxable = max(0, (total_ord_income + net_lt - cap_loss_deduct) - final_deduction)
+    final_state_tax = calculate_state_tax(state_taxable, status, state_name, custom_state_rate)
+    
     return {
-        "Ordinary Tax": ord_tax,
-        "LTCG Tax": ltcg_tax,
-        "NIIT": niit_tax,
-        "Medicare": med_tax,
-        "Total Liability": final_tax,
-        "Marginal Rate": marginal_rate,
-        "Effective Rate": final_tax / magi if magi > 0 else 0,
-        "Taxable Ordinary": taxable_ordinary
+        "Federal Ordinary": fed_ord_tax,
+        "Federal LTCG": fed_ltcg_tax,
+        "NIIT": niit,
+        "Medicare": med,
+        "State Tax": final_state_tax,
+        "Total Tax": fed_total + final_state_tax,
+        "Breakdown": (net_st, net_lt, cap_loss_deduct),
+        "Carryover": carryover,
+        "Deduction Used": final_deduction,
+        "Std Deduction Limit": base_std_ded,
+        "MAGI": magi
     }
 
-def project_investment_growth(principal, annual_contrib, years, growth_rate=0.08):
-    """Generates year-by-year growth data."""
-    balance = []
-    years_list = list(range(years + 1))
-    curr = principal
-    for _ in range(years):
-        balance.append(curr)
-        curr = curr * (1 + growth_rate) + annual_contrib
-    balance.append(curr)
-    return years_list, balance
-
-# --- SIDEBAR NAVIGATION ---
-st.sidebar.title("🇺🇸 Tax Strategist")
-app_mode = st.sidebar.radio("Select Planner Mode:", ["Standard Planner", "Advanced / HNWI"], help="Standard: For general retirement & W2 planning.\nAdvanced: For complex income, capital gains, & surtaxes.")
-
-# --- SHARED INPUTS ---
-st.sidebar.subheader("1. Profile")
-filing_status = st.sidebar.selectbox("Filing Status", ["Single", "Married Joint"])
-current_age = st.sidebar.number_input("Current Age", 30, 80, 35)
-
-if app_mode == "Standard Planner":
-    # === STANDARD MODE UI ===
-    st.title("Retirement & Tax Optimization Planner")
-
-    # --- MOBILE FRIENDLY INPUTS ---
-    # On mobile, the sidebar is hidden. This puts key inputs front-and-center.
-    with st.expander("📱 Tap here to Edit Income & Settings", expanded=False):
-        st.write("For full settings, open the sidebar menu (top-left).")
-        # We duplicate the most important input here for convenience
-        mobile_w2 = st.number_input("Quick Update: W2 Income", value=120000, step=5000, key="mobile_w2_input")
+# --- SIDEBAR INPUTS ---
+with st.sidebar:
+    st.header("1. Profile & Location")
+    status = st.selectbox("Filing Status", ["Single", "Married Joint"], key="sb_status")
+    age = st.number_input("Current Age", min_value=18, max_value=100, value=45, key="sb_age")
+    state_pick = st.selectbox("State of Residence", list(STATE_DATA.keys()), index=3, key="sb_state")
     
-        # If the user types here, we overwrite the sidebar value logic
-        if mobile_w2 != 120000:
-            w2_input = mobile_w2
-            # Note: To make this fully sync 2-ways is complex in Streamlit, 
-            # but this simple version works for quick "What-Ifs" on a phone.
+    custom_state_rate = 0.0
+    if state_pick == "Custom / Other":
+        custom_state_rate = st.number_input("Est. State Tax Rate (%)", 0.0, 15.0, 5.0, key="sb_custom_rate")
+
+    st.header("2. Income Sources")
+    w2_in = st.number_input("W2 / Business Income", value=180000, step=5000, key="sb_w2")
+    st.caption("Investment Income (Consolidated 1099)")
+    st_in = st.number_input("Short-Term Gain/Loss", value=5000, key="sb_st")
+    lt_in = st.number_input("Long-Term Gain/Loss", value=15000, key="sb_lt")
+    fut_in = st.number_input("Futures (Sec 1256)", value=0, key="sb_fut")
     
-    # Inputs
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        gross_income = st.number_input("Gross Annual Income ($)", value=120000, step=5000)
-    with col2:
-        retirement_age = st.number_input("Target Retirement Age", value=65)
-    with col3:
-        hsa_eligible = st.checkbox("HSA Eligible (HDHP)?", value=True)
+    st.header("3. Strategies")
     
-    ###ev_purchase = st.selectbox("Buying an EV in 2025?", ["No", "Yes (Before Sept 30)", "Yes (After Sept 30)"])
-    ev_purchase = st.number_input("Other Credit such as Buying an EV in 2025?", value=7500)
-    invest_budget = st.slider("Annual Investment Budget ($)", 0, 50000, 15000)
+    # Tax Loss Harvesting Input
+    st.markdown("##### 📉 Tax-Loss Harvesting")
+    enable_tlh = st.checkbox("Apply Harvested Losses?", key="sb_tlh_check")
+    tlh_val = 0
+    if enable_tlh:
+        tlh_val = st.number_input("Total Harvested Loss ($)", min_value=0, value=3000, step=1000, key="sb_tlh_val", help="Enter the amount of losses you harvested. The calculator subtracts this from Short Term gains first.")
 
-    # Logic
-    hsa_deduction = 0
-    if hsa_eligible:
-        hsa_deduction = HSA_LIMIT['Family'] if filing_status == 'Married Joint' else HSA_LIMIT['Single']
+    st.markdown("##### ❤️ Deductions")
+    strat_charity = st.number_input("Charitable Giving ($)", value=0, key="sb_charity")
+    
+    max_401k_limit = 23500
+    if age >= 50:
+        max_401k_limit = 31000 
+        st.info("✅ Catch-Up Contribution Eligible (50+)")
 
-    ev_credit = ev_purchase
-    ev_msg = ""
-    # if ev_purchase != "No":
-    #     cap = EV_CAP[filing_status]
-    #     if gross_income > cap:
-    #         ev_msg = "❌ Income exceeds cap."
-    #     elif "After" in ev_purchase:
-    #         ev_msg = "⚠️ Uncertain (Rules change Oct 1)."
-    #     else:
-    #         ev_credit = 7500
-    #         ev_msg = "✅ $7,500 Credit."
+    strat_401k = st.checkbox(f"Max 401k (${max_401k_limit:,} deduction)", value=False, key="sb_401k")
+    
+    manual_deduct = strat_charity + (max_401k_limit if strat_401k else 0)
 
-    # Advanced Inputs
-    with st.sidebar:
-        st.divider()
-        # st.subheader("2. Income Details")
-        # w2_input = st.number_input("W2 / Business Income", value=450000, step=10000)
-        # ltcg_input = st.number_input("Capital Gains / Divs", value=100000, step=5000)
+    # --- TIP JAR ---
+    st.divider() 
+    st.markdown("### ☕ Support the Dev")
+    st.write("Did this tool help you? Support keeps it free!")
+    
+    bmc_link = "https://www.buymeacoffee.com" 
+    st.markdown(
+        f"""
+        <a href="{bmc_link}" target="_blank">
+            <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 40px !important;width: 150px !important;" >
+        </a>
+        """,
+        unsafe_allow_html=True
+    )
+
+# --- MAIN PAGE DASHBOARD ---
+
+st.title("🇺🇸 Omni-Tax Strategist")
+st.markdown(f"### *Consolidated Federal + {state_pick} Tax Analysis*")
+
+with st.expander("📱 Tap here for Quick Income Updates", expanded=False):
+    st.write("Full settings are in the sidebar.")
+    quick_w2 = st.number_input("Quick W2 Update", value=w2_in, step=5000, key="mobile_w2")
+    if quick_w2 != w2_in:
+        w2_in = quick_w2
+
+# --- CALCULATE ---
+results = calculate_full_liability(w2_in, st_in, lt_in, fut_in, tlh_val, status, state_pick, custom_state_rate, manual_deduct, age)
+
+# 1. Top Level Cards
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Tax Bill", f"${results['Total Tax']:,.0f}")
+eff_rate = results['Total Tax'] / results['MAGI'] if results['MAGI'] > 0 else 0
+col2.metric("True Effective Rate", f"{eff_rate:.1%}")
+col3.metric("State Tax Portion", f"${results['State Tax']:,.0f}")
+col4.metric("Deduction Used", f"${results['Deduction Used']:,.0f}", help=f"Higher of Itemized or Standard")
+
+# 2. Logic Indicators
+st.divider()
+
+if results['Carryover'] > 0:
+    st.success(f"📉 **Harvesting Success:** You have used the max $3,000 deduction against W2 income. You have **${results['Carryover']:,.0f}** in losses carrying over to next year.")
+elif enable_tlh:
+    st.success(f"✅ **Tax Loss Applied:** Your harvested losses fully offset your capital gains.")
+
+if results['Deduction Used'] == results['Std Deduction Limit'] and age >= 65:
+    st.success(f"👴 **Senior Benefit:** Standard Deduction increased to **${results['Std Deduction Limit']:,}**.")
+
+if results['NIIT'] > 0:
+    st.warning(f"⚠️ **NIIT Triggered:** +${results['NIIT']:,.0f} (3.8% Surtax).")
+
+# 3. Visualizations
+tab1, tab2, tab3 = st.tabs(["📊 Liability Waterfall", "🌍 Federal vs State Split", "🧾 Detailed Ledger"])
+
+with tab1:
+    fig = go.Figure(go.Waterfall(
+        name = "Tax Build", orientation = "v",
+        measure = ["relative", "relative", "relative", "relative", "relative", "total"],
+        x = ["Fed Ordinary", "Fed CapGains", "NIIT (3.8%)", "Medicare (0.9%)", "State Tax", "TOTAL"],
+        textposition = "outside",
+        text = [f"${x/1000:.1f}k" for x in [results['Federal Ordinary'], results['Federal LTCG'], results['NIIT'], results['Medicare'], results['State Tax'], results['Total Tax']]],
+        y = [results['Federal Ordinary'], results['Federal LTCG'], results['NIIT'], results['Medicare'], results['State Tax'], results['Total Tax']],
+        connector = {"line":{"color":"rgb(63, 63, 63)"}},
+    ))
+    fig.update_layout(title="Sources of Tax Liability", height=450)
+    st.plotly_chart(fig, use_container_width=True)
+
+with tab2:
+    labels = ['Federal Tax', 'State Tax']
+    values = [results['Total Tax'] - results['State Tax'], results['State Tax']]
+    
+    c1, c2 = st.columns([1, 2])
+    with c1:
+        st.markdown("### The State Burden")
+        share = results['State Tax'] / results['Total Tax'] if results['Total Tax'] > 0 else 0
+        st.write(f"In **{state_pick}**, State Tax accounts for **{share:.1%}** of your total liability.")
         
-        # st.subheader("3. Strategy Marketplace")
-        # strat_tlh = st.checkbox("Tax-Loss Harvesting")
-        # tlh_val = st.slider("Harvested Losses ($)", 0, 50000, 10000) if strat_tlh else 0
-        
-        # strat_charity = st.checkbox("Charitable Giving (DAF)")
-        # charity_val = st.number_input("Donation Amount ($)", value=25000) if strat_charity else 0
-        
-        # strat_401k = st.checkbox("Max 401k/SEP Deferral")
-        # def_val = 23500 if strat_401k else 0
+        if results['State Tax'] > 10000:
+            st.info("ℹ️ **SALT Cap Hit:** You paid >$10k in State Tax, but Federal deduction is capped at $10k.")
+    with c2:
+        fig2 = go.Figure(data=[go.Pie(labels=labels, values=values, hole=.4)])
+        st.plotly_chart(fig2, use_container_width=True)
 
-        ###st.divider() # Adds a visual line separator
-        st.markdown("### ☕ Support the Dev")
-        st.write("Did this tool help you with valuable information? Your support helps keep it free and updated!")
-    
-        # Replace 'YOUR_USERNAME' with your actual Buy Me a Coffee username
-        bmc_link = "https://www.buymeacoffee.com/ujqui"
-    
-        st.markdown(
-            f"""
-            <a href="{bmc_link}" target="_blank">
-            <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 50px !important;width: 180px !important;" >
-            </a>
-            """,
-            unsafe_allow_html=True
-        )
-    
-        st.caption("All tips count as 'Business Income' for development services.")
-    
-    # Calculation
-    results = calculate_tax_liability(gross_income, 0, filing_status, hsa_deduction, ev_credit)
-
-    # Strategy: Trad vs Roth
-    years = retirement_age - current_age
-    marg_rate = results['Marginal Rate']
-    
-    x, y_trad = project_investment_growth(0, invest_budget, years)
-    final_trad = y_trad[-1] * 0.80 # Assume 20% tax on withdrawal
-    
-    tax_hit = invest_budget * marg_rate
-    roth_contrib = invest_budget - tax_hit
-    x, y_roth = project_investment_growth(0, roth_contrib, years)
-    final_roth = y_roth[-1]
-
-    # Metrics
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Est. Tax Bill", f"${results['Total Liability']:,.0f}")
-    m2.metric("Marginal Rate", f"{results['Marginal Rate']:.0%}")
-    m3.metric("Effective Rate", f"{results['Effective Rate']:.1%}")
-    m4.metric("EV Credit", f"${ev_credit}", delta=ev_msg)
-
-    # Charts
-    tab1, tab2 = st.tabs(["📈 Wealth Projection", "📋 Recommendations"])
-    with tab1:
-        st.subheader(f"Traditional vs. Roth Analysis ({years} Year Horizon)")
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x, y=y_trad, name="Traditional (Pre-Tax Balance)", line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=x, y=y_roth, name="Roth (Post-Tax Balance)", line=dict(color='green')))
-        st.plotly_chart(fig, use_container_width=True)
-        
-    with tab2:
-        st.subheader("Action Plan")
-        st.markdown(f"""
-        1. **HSA:** {"Maximize your HSA contribution of $" + str(hsa_deduction) + "." if hsa_eligible else "Not applicable."}
-        2. **Retirement Account:** Based on your {marg_rate:.0%} bracket, prioritize **{"Traditional 401k/IRA" if marg_rate >= 0.22 else "Roth IRA/401k"}**.
-        """)
-
-else:
-    # === ADVANCED / HNWI MODE UI ===
-    st.title("Advanced Tax Strategy & Simulation")
-
-    # # --- MOBILE FRIENDLY INPUTS ---
-    # # On mobile, the sidebar is hidden. This puts key inputs front-and-center.
-    # with st.expander("📱 Tap here to Edit Income & Settings", expanded=False):
-    #     st.write("For full settings, open the sidebar menu (top-left).")
-    #     # We duplicate the most important input here for convenience
-    #     mobile_w2 = st.number_input("Quick Update: W2 Income", value=w2_in, step=5000, key="mobile_w2_input")
-    
-    #     # If the user types here, we overwrite the sidebar value logic
-    #     if mobile_w2 != w2_in:
-    #         w2_in = mobile_w2
-    #         # Note: To make this fully sync 2-ways is complex in Streamlit, 
-    #         # but this simple version works for quick "What-Ifs" on a phone.
-
-    # Advanced Inputs
-    with st.sidebar:
-        st.divider()
-        st.subheader("2. Income Details")
-        w2_input = st.number_input("W2 / Business Income", value=450000, step=10000)
-        ltcg_input = st.number_input("Capital Gains / Divs", value=100000, step=5000)
-        
-        st.subheader("3. Strategy Marketplace")
-        strat_tlh = st.checkbox("Tax-Loss Harvesting")
-        tlh_val = st.slider("Harvested Losses ($)", 0, 50000, 10000) if strat_tlh else 0
-        
-        strat_charity = st.checkbox("Charitable Giving (DAF)")
-        charity_val = st.number_input("Donation Amount ($)", value=25000) if strat_charity else 0
-        
-        strat_401k = st.checkbox("Max 401k/SEP Deferral")
-        def_val = 23500 if strat_401k else 0
-
-        ###st.divider() # Adds a visual line separator
-        st.markdown("### ☕ Support the Dev")
-        st.write("Did this tool help you with valuable information? Your support helps keep it free and updated!")
-    
-        # Replace 'YOUR_USERNAME' with your actual Buy Me a Coffee username
-        bmc_link = "https://www.buymeacoffee.com/ujqui"
-    
-        st.markdown(
-            f"""
-            <a href="{bmc_link}" target="_blank">
-            <img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" alt="Buy Me A Coffee" style="height: 50px !important;width: 180px !important;" >
-            </a>
-            """,
-            unsafe_allow_html=True
-        )
-    
-        st.caption("All tips count as 'Business Income' for development services.")
-
-    # 1. Baseline Calculation
-    base_res = calculate_tax_liability(w2_input, ltcg_input, filing_status, 0, 0)
-    
-    # 2. Optimized Calculation
-    applied_ltcg_deduct = min(ltcg_input, tlh_val)
-    remaining_loss = tlh_val - applied_ltcg_deduct
-    applied_ord_deduct = min(3000, remaining_loss) + charity_val + def_val
-    opt_ltcg_income = max(0, ltcg_input - applied_ltcg_deduct)
-    
-    opt_res = calculate_tax_liability(w2_input, opt_ltcg_income, filing_status, applied_ord_deduct, 0)
-    savings = base_res['Total Liability'] - opt_res['Total Liability']
-    
-    # Dashboard
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Current Liability", f"${base_res['Total Liability']:,.0f}")
-    c2.metric("Optimized Liability", f"${opt_res['Total Liability']:,.0f}", delta=f"-${savings:,.0f}", delta_color="inverse")
-    c3.metric("Net Investment Tax (NIIT)", f"${opt_res['NIIT']:,.0f}", help="3.8% Surtax")
-    
-    # Visualization Tabs
-    t1, t2 = st.tabs(["📊 Savings Waterfall", "📝 Detailed Ledger"])
-    
-    with t1:
-        fig = go.Figure(go.Waterfall(
-            name = "Tax", orientation = "v",
-            measure = ["relative", "relative", "relative", "total"],
-            x = ["Baseline Tax", "Strategies Applied", "Surtax Reduction", "Final Bill"],
-            textposition = "outside",
-            text = [f"${base_res['Total Liability']/1000:.0f}k", f"-${(base_res['Ordinary Tax']-opt_res['Ordinary Tax'] + base_res['LTCG Tax']-opt_res['LTCG Tax'])/1000:.1f}k", "...", f"${opt_res['Total Liability']/1000:.0f}k"],
-            y = [
-                base_res['Total Liability'],
-                -(base_res['Ordinary Tax'] - opt_res['Ordinary Tax'] + base_res['LTCG Tax'] - opt_res['LTCG Tax']),
-                -(base_res['NIIT'] - opt_res['NIIT']),
-                opt_res['Total Liability']
-            ],
-            connector = {"line":{"color":"rgb(63, 63, 63)"}},
-        ))
-        st.plotly_chart(fig, use_container_width=True)
-
-    with t2:
-        # Dataframe creation
-        df_data = {
-            "Item": ["Ordinary Income", "LTCG Income", "Taxable Ordinary", "Ordinary Tax", "LTCG Tax", "NIIT (3.8%)", "Medicare (0.9%)", "TOTAL TAX"],
-            "Baseline": [
-                w2_input, ltcg_input, base_res['Taxable Ordinary'], base_res['Ordinary Tax'], 
-                base_res['LTCG Tax'], base_res['NIIT'], base_res['Medicare'], base_res['Total Liability']
-            ],
-            "Optimized": [
-                w2_input - applied_ord_deduct, opt_ltcg_income, opt_res['Taxable Ordinary'], opt_res['Ordinary Tax'],
-                opt_res['LTCG Tax'], opt_res['NIIT'], opt_res['Medicare'], opt_res['Total Liability']
-            ]
-        }
-        df = pd.DataFrame(df_data)
-        df['Savings'] = df['Baseline'] - df['Optimized']
-        
-        # --- FIX: Apply format ONLY to numeric columns ---
-        # "Item" column is ignored by the formatter to prevent the ValueError
-        st.dataframe(
-            df.style.format(
-                subset=["Baseline", "Optimized", "Savings"], 
-                formatter="${:,.0f}"
-            ), 
-            use_container_width=True
-        )
+with tab3:
+    data = {
+        "Category": ["W2 Income", "Net Short-Term (after TLH)", "Net Long-Term (after TLH)", "---", "Federal Ordinary Tax", "Federal LTCG Tax", "NIIT Surtax", "Medicare Surtax", "State Tax", "---", "TOTAL LIABILITY"],
+        "Amount": [
+            w2_in, results['Breakdown'][0], results['Breakdown'][1], 0, 
+            results['Federal Ordinary'], results['Federal LTCG'], results['NIIT'], results['Medicare'], results['State Tax'], 0, results['Total Tax']
+        ]
+    }
+    df = pd.DataFrame(data)
+    st.dataframe(df.style.format({"Amount": lambda x: f"${x:,.2f}" if x > 0 else ("" if x == 0 else f"-${abs(x):,.2f}")}), use_container_width=True)
