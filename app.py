@@ -28,17 +28,47 @@ st.markdown("""
 
 # --- CONSTANTS: FEDERAL (2025) ---
 FED_BRACKETS = {
-    'Single': [(11925, 0.10), (48475, 0.12), (103350, 0.22), (197300, 0.24), (250525, 0.32), (626350, 0.35), (float('inf'), 0.37)],
-    'Married Joint': [(23850, 0.10), (96950, 0.12), (206700, 0.22), (394600, 0.24), (501050, 0.32), (751600, 0.35), (float('inf'), 0.37)]
+    'Single': [
+        (11925, 0.10), (48475, 0.12), (103350, 0.22), 
+        (197300, 0.24), (250525, 0.32), (626350, 0.35), (float('inf'), 0.37)
+    ],
+    'Married Joint': [
+        (23850, 0.10), (96950, 0.12), (206700, 0.22), 
+        (394600, 0.24), (501050, 0.32), (751600, 0.35), (float('inf'), 0.37)
+    ],
+    # ADDED: Head of Household (Wider brackets than Single)
+    'Head of Household': [
+        (17000, 0.10), (64850, 0.12), (103350, 0.22), 
+        (197300, 0.24), (250500, 0.32), (626350, 0.35), (float('inf'), 0.37)
+    ]
 }
+
 LTCG_BRACKETS = {
     'Single': [(48350, 0.0), (533400, 0.15), (float('inf'), 0.20)],
-    'Married Joint': [(96700, 0.0), (600050, 0.15), (float('inf'), 0.20)]
+    'Married Joint': [(96700, 0.0), (600050, 0.15), (float('inf'), 0.20)],
+    # ADDED: Head of Household (0% up to ~64k, 15% up to ~566k)
+    'Head of Household': [(64750, 0.0), (566700, 0.15), (float('inf'), 0.20)]
 }
-STD_DEDUCTION = {'Single': 15000, 'Married Joint': 30000}
-SENIOR_BOOST = {'Single': 1950, 'Married Joint': 1550} 
-NIIT_THRESH = {'Single': 200000, 'Married Joint': 250000}
-SALT_CAP = 10000  
+
+STD_DEDUCTION = {
+    'Single': 15000, 
+    'Married Joint': 30000,
+    'Head of Household': 22500 # Higher standard deduction
+}
+
+SENIOR_BOOST = {
+    'Single': 1950, 
+    'Married Joint': 1550,
+    'Head of Household': 1950 
+} 
+
+NIIT_THRESH = {
+    'Single': 200000, 
+    'Married Joint': 250000,
+    'Head of Household': 200000 # Same threshold as Single
+}
+
+SALT_CAP = 10000
 
 # --- CONSTANTS: STATE ---
 STATE_DATA = {
@@ -300,7 +330,7 @@ def calculate_full_liability(w2, st_gains, lt_gains, futures, status, state_name
 # --- SIDEBAR INPUTS ---
 with st.sidebar:
     st.header("1. Profile & Location")
-    status = st.selectbox("Filing Status", ["Single", "Married Joint"], key="sidebar_filing")
+    status = st.selectbox("Filing Status", ["Single", "Married Joint","Head of Household"], key="sidebar_filing")
     age = st.number_input("Current Age", min_value=18, max_value=100, value=45)
     state_pick = st.selectbox("State of Residence", list(STATE_DATA.keys()), index=3)
     
@@ -412,25 +442,34 @@ with tab3:
     st.dataframe(df.style.format({"Amount": lambda x: f"${x:,.2f}" if x > 0 else ("" if x == 0 else f"-${abs(x):,.2f}")}), use_container_width=True)
 
 with tab4:
-    # REPLACED: "AI Economy Simulator" -> "Long-Term Wealth Projection"
     st.subheader("🔮 Long-Term Wealth Projection")
     st.markdown("Compare investing **Pre-Tax** (Traditional) vs. **Post-Tax** (Roth) vs. **Brokerage**.")
     
-    # Inputs
+    # --- 1. DEFINE INPUTS FIRST (So 'growth_rate' exists) ---
     col_p1, col_p2, col_p3 = st.columns(3)
     with col_p1:
-        invest_budget = st.number_input("Annual Gross Budget ($)", value=12000, step=1000)
+        invest_budget = st.number_input("Annual Gross Budget ($)", value=25000, step=1000)
     with col_p2:
+        # This is where 'growth_rate' is defined
         growth_rate = st.slider("Market Growth Rate (%)", 3.0, 12.0, 7.0) / 100.0
     with col_p3:
         years_to_grow = st.slider("Years to Grow", 5, 40, 65 - age if age < 65 else 10)
 
     st.divider()
     
-    # Simulation Logic
-    current_marg_rate = results['Marginal Rate']
+    # --- 2. INFLATION LOGIC (Now it works because growth_rate exists) ---
+    adjust_inflation = st.checkbox("Adjust for Inflation (Show Real Purchasing Power?)", value=True)
     
-    # REPLACED: AI text with standard planning text
+    # Logic: Nominal Rate vs Real Rate
+    inflation_rate = 0.03 # Assumed 3%
+    if adjust_inflation:
+        # Fisher Equation for Real Interest Rate
+        calc_rate = (1 + growth_rate) / (1 + inflation_rate) - 1
+    else:
+        calc_rate = growth_rate
+
+    # --- 3. SIMULATION ---
+    current_marg_rate = results['Marginal Rate']
     st.write("**Future Tax Scenario:** Do you expect your effective tax rate in retirement to be higher or lower than today?")
     future_tax_rate = st.slider("Est. Effective Tax Rate in Retirement (%)", 0, 50, 20) / 100.0
     
@@ -447,22 +486,33 @@ with tab4:
     years_axis = list(range(years_to_grow + 1))
     
     for _ in years_axis:
+        # Use 'calc_rate' (which handles the inflation logic) instead of 'growth_rate'
+        
+        # A. Traditional (Pre-Tax)
+        # Apply growth, then tax is taken ONLY at withdrawal (simulated in the list append)
         trad_values.append(trad_corpus * (1 - future_tax_rate))
+        trad_corpus = (trad_corpus + invest_budget) * (1 + calc_rate)
+        
+        # B. Roth (Post-Tax)
+        # Tax paid upfront, grows tax-free
         roth_values.append(roth_corpus)
+        roth_corpus = (roth_corpus + roth_contribution) * (1 + calc_rate)
+        
+        # C. Brokerage (Taxable)
+        # Tax paid upfront. Growth is taxed at 15% LTCG.
+        # Note: We apply tax drag annually or at end. For simplicity, we calculate net value.
         brok_gain = brok_corpus - (roth_contribution * _) if _ > 0 else 0
         brok_values.append(brok_corpus - (brok_gain * 0.15)) 
-        
-        trad_corpus = (trad_corpus + invest_budget) * (1 + growth_rate)
-        roth_corpus = (roth_corpus + roth_contribution) * (1 + growth_rate)
-        brok_corpus = (brok_corpus + roth_contribution) * (1 + growth_rate) 
+        brok_corpus = (brok_corpus + roth_contribution) * (1 + calc_rate)
 
-    # Plot
+    # --- 4. PLOT ---
     fig_proj = go.Figure()
     fig_proj.add_trace(go.Scatter(x=years_axis, y=trad_values, mode='lines', name=f'Traditional (if Future Tax={future_tax_rate:.0%})', line=dict(color='blue')))
     fig_proj.add_trace(go.Scatter(x=years_axis, y=roth_values, mode='lines', name=f'Roth (Taxed Now at {current_marg_rate:.0%})', line=dict(color='green', width=4)))
     fig_proj.add_trace(go.Scatter(x=years_axis, y=brok_values, mode='lines', name='Taxable Brokerage', line=dict(color='gray', dash='dot')))
     
-    fig_proj.update_layout(title="Net After-Tax Purchasing Power", xaxis_title="Years", yaxis_title="Net Value ($)")
+    title_suffix = "(Inflation Adjusted)" if adjust_inflation else "(Nominal Dollars)"
+    fig_proj.update_layout(title=f"Net After-Tax Purchasing Power {title_suffix}", xaxis_title="Years", yaxis_title="Net Value ($)")
     st.plotly_chart(fig_proj, use_container_width=True)
     
     # Analysis
@@ -476,5 +526,6 @@ with tab4:
         st.success(f"✅ **Roth Wins:** If your future tax rate is higher (or similar), locking in today's rate generates **${abs(diff):,.0f}** more wealth.")
     else:
         st.warning("⚖️ **It's a Tie:** The tax rates are similar enough that it doesn't strictly matter.")
+
 
 
